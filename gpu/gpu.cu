@@ -13,81 +13,56 @@ int nx, ny;
 double H, g, dx, dy, dt;
 int t = 0;
 
-// Combined kernel for all derivatives
-__global__ void compute_all_derivatives_kernel(double *h, double *u, double *v,
-                                             double *dh, double *du, double *dv,
-                                             int nx, int ny, double H, double g, 
-                                             double dx, double dy) {
-    int j = blockIdx.x * blockDim.x + threadIdx.x;  // faster moving index for coalescing
-    int i = blockIdx.y * blockDim.y + threadIdx.y;
+__global__ void compute_derivatives_and_step_kernel(
+    double *h, double *u, double *v,
+    double *dh, double *du, double *dv,
+    double *dh1, double *du1, double *dv1,
+    double *dh2, double *du2, double *dv2,
+    int nx, int ny, double H, double g, 
+    double dx, double dy, double dt,
+    double a1, double a2, double a3) {
     
-    if (i < nx && j < ny) {
-        // Compute all derivatives at once
-        dh(i, j) = -H * (du_dx(i, j) + dv_dy(i, j));
-        du(i, j) = -g * dh_dx(i, j);
-        dv(i, j) = -g * dh_dy(i, j);
-    }
-}
-
-// Combined kernel for all ghost cells
-__global__ void compute_all_ghost_cells_kernel(double *h, int nx, int ny) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    // Handle horizontal ghost cells
-    if (idx < ny) {
-        h(nx, idx) = h(0, idx);
-    }
-    
-    // Handle vertical ghost cells
-    if (idx < nx) {
-        h(idx, ny) = h(idx, 0);
-    }
-}
-
-// Combined kernel for all boundaries
-__global__ void compute_all_boundaries_kernel(double *u, double *v, int nx, int ny) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    // Handle horizontal boundaries
-    if (idx < ny) {
-        u(0, idx) = u(nx, idx);
-    }
-    
-    // Handle vertical boundaries
-    if (idx < nx) {
-        v(idx, 0) = v(idx, ny);
-    }
-}
-
-// Multistep kernel remains mostly the same but with swapped indices
-__global__ void multistep_kernel(double *h, double *u, double *v,
-                                double *dh, double *du, double *dv,
-                                double *dh1, double *du1, double *dv1,
-                                double *dh2, double *du2, double *dv2,
-                                int nx, int ny, double dt,
-                                double a1, double a2, double a3) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     int i = blockIdx.y * blockDim.y + threadIdx.y;
     
     if (i < nx && j < ny) {
-        // Update height field
-        h(i, j) += (a1 * dh(i, j) + 
-                    a2 * dh1(i, j) + 
-                    a3 * dh2(i, j)) * dt;
+        // Compute all derivatives
+        dh(i, j) = -H * (du_dx(i, j) + dv_dy(i, j));
+        du(i, j) = -g * dh_dx(i, j);
+        dv(i, j) = -g * dh_dy(i, j);
+
+        __syncthreads();
         
-        // Update u velocity field
+        // Do multistep update immediately
+        h(i, j) += (a1 * dh(i, j) + a2 * dh1(i, j) + a3 * dh2(i, j)) * dt;
+        
         if (i < nx - 1) {
-            u(i + 1, j) += (a1 * du(i, j) + 
-                           a2 * du1(i, j) + 
-                           a3 * du2(i, j)) * dt;
+            u(i + 1, j) += (a1 * du(i, j) + a2 * du1(i, j) + a3 * du2(i, j)) * dt;
         }
         
-        // Update v velocity field
         if (j < ny - 1) {
-            v(i, j + 1) += (a1 * dv(i, j) + 
-                           a2 * dv1(i, j) + 
-                           a3 * dv2(i, j)) * dt;
+            v(i, j + 1) += (a1 * dv(i, j) + a2 * dv1(i, j) + a3 * dv2(i, j)) * dt;
         }
+    }
+}
+
+__global__ void compute_boundaries_kernel(double *h, double *u, double *v, int nx, int ny) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // Ghost cells
+    if (idx < ny) {
+        h(nx, idx) = h(0, idx);
+    }
+    if (idx < nx) {
+        h(idx, ny) = h(idx, 0);
+    }
+    
+    // Boundaries
+    if (idx < ny) {
+        u(0, idx) = u(nx, idx);
+    }
+    if (idx < nx) {
+        v(idx, 0) = v(idx, ny);
     }
 }
 
@@ -156,19 +131,10 @@ void init(double *h0, double *u0, double *v0, double length_, double width_,
 
 void step() {
     dim3 blockDim(16, 16);
-    dim3 gridDim((ny + blockDim.x - 1) / blockDim.x,  // Swapped nx/ny for coalescing
+    dim3 gridDim((ny + blockDim.x - 1) / blockDim.x, 
                  (nx + blockDim.y - 1) / blockDim.y);
-    
-    // Combined ghost cells kernel
-    compute_all_ghost_cells_kernel<<<(max(nx,ny) + 255) / 256, 256>>>(h, nx, ny);
-    cudaDeviceSynchronize();
-    
-    // Combined derivatives kernel
-    compute_all_derivatives_kernel<<<gridDim, blockDim>>>(h, u, v, dh, du, dv, 
-                                                         nx, ny, H, g, dx, dy);
-    cudaDeviceSynchronize();
-    
-    // Set multistep coefficients
+
+    // Set coefficients
     double a1, a2 = 0.0, a3 = 0.0;
     if (t == 0) {
         a1 = 1.0;
@@ -180,17 +146,14 @@ void step() {
         a2 = -16.0 / 12.0;
         a3 = 5.0 / 12.0;
     }
-    
-    // Multistep kernel
-    multistep_kernel<<<gridDim, blockDim>>>(h, u, v, 
-                                           dh, du, dv,
-                                           dh1, du1, dv1,
-                                           dh2, du2, dv2,
-                                           nx, ny, dt, a1, a2, a3);
+
+    // Just two kernel launches
+    compute_boundaries_kernel<<<(max(nx,ny) + 255) / 256, 256>>>(h, u, v, nx, ny);
     cudaDeviceSynchronize();
     
-    // Combined boundaries kernel
-    compute_all_boundaries_kernel<<<(max(nx,ny) + 255) / 256, 256>>>(u, v, nx, ny);
+    compute_derivatives_and_step_kernel<<<gridDim, blockDim>>>(
+        h, u, v, dh, du, dv, dh1, du1, dv1, dh2, du2, dv2,
+        nx, ny, H, g, dx, dy, dt, a1, a2, a3);
     cudaDeviceSynchronize();
     
     swap_buffers();
