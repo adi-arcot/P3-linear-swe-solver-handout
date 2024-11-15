@@ -16,7 +16,7 @@ double *h, *u, *v, *dh, *du, *dv, *dh1, *du1, *dv1, *dh2, *du2, *dv2;
 double H, g, dx, dy, dt;
 
 void init(double *h0, double *u0, double *v0, double length_, double width_, int nx_, int ny_, double H_, double g_, double dt_, int rank_, int num_procs_)
-{
+{ 
     // We set the pointers to the arrays that were passed in
     h = h0;
     u = u0;
@@ -259,4 +259,4 @@ void free_memory()
     free(dh2);
     free(du2);
     free(dv2);
-}
+}  

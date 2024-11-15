@@ -1,8 +1,12 @@
 CPP=CC
 
 CFLAGS=-lm
-COPTFLAGS=-O3 -ffast-math
-
+COPTFLAGS=-O3 -ffast-math -flto -march=native -funroll-loops -ftree-vectorize -xhost
+# -O3 -ffast-math -march=native -funroll-loops -flto -fprefetch-loop-arrays -fstrict-aliasing -floop-nest-optimize -ftree-vectorize -fassociative-math -fbranch-target-load-optimize2
+# -flto
+# may -ftree-vectorize -fbranch-target-load-optimize
+# -flto -ffast-math -march=native -funroll-loops -ftree-vectorize 
+#COPTFLAGS=-O3 -ffast-math -flto -march=native -funroll-loops -ftree-vectorize -xhost
 MPIFLAGS=-DMPI
 
 NVCC=nvcc
